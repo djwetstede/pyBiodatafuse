@@ -43,6 +43,12 @@
 
 > We introduce BioDataFuse, a query-based Python tool for seamless integration of biomedical databases. BioDataFuse establishes a modular framework for efficient data wrangling, enabling context-specific knowledge graph creation and supporting graph-based analyses. With a user-friendly interface, it enables users to dynamically create knowledge graphs from their input data. Supported by a robust Python package, pyBiodatafuse, this tool excels in data harmonization, aggregating diverse sources through modular queries. Moreover, BioDataFuse provides plugin capabilities for Cytoscape and Neo4j, allowing local graph hosting. Ongoing refinements enhance the graph utility through tasks like link prediction, making BioDataFuse a versatile solution for efficient and effective biological data integration.
 
+To know more about the package, read our documentation [here](https://pybiodatafuse.readthedocs.io/en/latest/index.html).
+
+## Creating your own graph
+
+To generate your own graph, check out our tutorial notebook [in examples](examples).
+
 <!-- ### Command Line Interface
 
 The pyBiodatafuse command line tool is automatically installed. It can
@@ -54,6 +60,30 @@ $ pyBiodatafuse --help
 
 > TODO show the most useful thing the CLI does! The CLI will have documentation auto-generated
 > by `sphinx`. -->
+
+We support exporting of the graphs in Cytoscape, Neo4J and GraphDB. You can use the following functions:
+
+```python
+# on neo4j
+neo4j.load_graph(pygraph, uri="bolt://localhost:7687", username="YOUR_USERNAME", password="YOUR_PASSWORD")  # change username and password
+
+# on cytoscape
+cytoscape.load_graph(pygraph, network_name="YOUR_CUSTOM_NAME")
+
+# rdf ttl files
+bdf = BDFGraph(
+    base_uri="https://biodatafuse.org/YOUR_CUSTOM_NAME/",
+    version_iri="https://biodatafuse.org/example/YOUR_CUSTOM_NAME.ttl",
+    orcid="YOUR_ORCID",
+    author="YOUR_NAME",
+)
+
+bdf.generate_rdf(combined_df, combined_metadata)  # Generate the RDF from the (meta)data files from the example runs
+bdf.serialize(
+    "YOUR_CUSTOM_NAME.ttl",
+    format="ttl",
+)
+```
 
 ## 🚀 Installation
 

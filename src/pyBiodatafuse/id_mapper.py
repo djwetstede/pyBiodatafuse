@@ -4,22 +4,26 @@
 
 import csv
 import datetime
+import json
 import logging
+import os
+import re
 import time
 from importlib import resources
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import pandas as pd
 import requests
 from pubchempy import BadRequestError, PubChemHTTPError, get_compounds, get_synonyms
 from rdkit.Chem import CanonSmiles
+from tqdm import tqdm
 
-from pyBiodatafuse.constants import BRIDGEDB_ENDPOINT
+import pyBiodatafuse.constants as Cons
 
 logger = logging.getLogger(__name__)
 
 
-def read_resource_files() -> pd.DataFrame:
+def read_datasource_file() -> pd.DataFrame:
     """Read the datasource file.
 
     :returns: a DataFrame containing the data from the datasource file
@@ -30,6 +34,54 @@ def read_resource_files() -> pd.DataFrame:
     return identifier_options
 
 
+def match_input_datasource(identifiers) -> str:
+    """Check if the input identifiers match the datasource.
+
+    This function attempts to match the provided identifiers against known patterns
+    in the datasource file and returns the corresponding data source.
+
+    :param identifiers: a pandas DataFrame containing the identifiers to be matched
+    :returns: data source
+    :raises ValueError: if the identifiers series is empty, no match is found, or multiple matches are found
+    """
+    if identifiers.empty:
+        raise ValueError("The identifiers series is empty.")
+
+    with resources.path("pyBiodatafuse.resources", "datasources.csv") as df_file:
+        datasources = pd.read_csv(df_file)
+
+    matched_sources = set()
+    for identifier in identifiers:
+        match_found = False
+        for _, row in datasources.iterrows():
+            pattern = (
+                str(row["pattern"]) if pd.notna(row["pattern"]) else None
+            )  # Handle NaN patterns
+            if not pattern:
+                continue  # Skip rows with invalid patterns
+            if "ENS" in identifier:
+                return "Ensembl"
+            try:
+                if re.fullmatch(pattern, identifier):
+                    if pattern not in [r"^\d+$", r"^\S+$"]:
+                        matched_sources.add(row["source"])
+                        match_found = True
+            except re.error as e:
+                logger.warning(f"Invalid regex pattern '{pattern}': {e}")
+                continue  # Skip invalid regex patterns
+        if not match_found:
+            raise ValueError(f"Identifier '{identifier}' does not match any known pattern.")
+
+    if len(matched_sources) > 1:
+        logger.info(f"Matched data sources: {', '.join(matched_sources)}")
+        raise ValueError(
+            f"Multiple data sources match the provided identifiers (e.g., {identifier}): {', '.join(matched_sources)}. "
+            "Please specify the datasource explicitly using `input_datasource`."
+        )
+
+    return matched_sources.pop()
+
+
 def get_version_webservice_bridgedb() -> dict:
     """Get version of BridgeDb web service.
 
@@ -37,8 +89,7 @@ def get_version_webservice_bridgedb() -> dict:
     :raises ValueError: if failed to retrieve data
     """
     # Set the BridgeDb API
-    url = "https://webservice.bridgedb.org"
-    version_response = requests.get(url=f"{url}/config")
+    version_response = requests.get(url=f"{Cons.BRIDGEDB_ENDPOINT}/config")
 
     # Check if the request was successful (status code 200)
     if version_response.status_code == 200:
@@ -68,11 +119,9 @@ def get_version_datasource_bridgedb(input_species: Optional[str] = None) -> List
     """
     if input_species is None:
         input_species = "Human"
-    # Set the BridgeDb API
-    url = "https://webservice.bridgedb.org"
 
     # Add datasource version to metadata file
-    datasource_response = requests.get(url=f"{url}/{input_species}/properties")
+    datasource_response = requests.get(url=f"{Cons.BRIDGEDB_ENDPOINT}/{input_species}/properties")
 
     # Check if the request was successful (status code 200)
     if datasource_response.status_code == 200:
@@ -87,37 +136,117 @@ def get_version_datasource_bridgedb(input_species: Optional[str] = None) -> List
 def bridgedb_xref(
     identifiers: pd.DataFrame,
     input_species: Optional[str] = None,
-    input_datasource: str = "HGNC",
     output_datasource: Optional[list] = None,
+    input_datasource: Literal[
+        "Ensembl",
+        "NCBI Gene",
+        "HGNC",
+        "HGNC Accession Number",
+        "MGI",
+        "miRBase mature sequence",
+        "miRBase Sequence",
+        "OMIM",
+        "RefSeq",
+        "Rfam",
+        "RGD",
+        "SGD",
+        "UCSC Genome Browser",
+        "NCBI Protein",
+        "PDB",
+        "Pfam",
+        "Uniprot-TrEMBL",
+        "Uniprot-SwissProt",
+        "Affy",
+        "Agilent",
+        "Illumina",
+        "Gene Ontology",
+        "CAS",
+        "ChEBI",
+        "ChemSpider",
+        "ChEMBL compound",
+        "DrugBank",
+        "HMDB",
+        "Guide to Pharmacology Ligand ID",
+        "InChIKey",
+        "KEGG Compound",
+        "KEGG Drug",
+        "KEGG Glycan",
+        "LIPID MAPS",
+        "LipidBank",
+        "PharmGKB Drug",
+        "PubChem Compound",
+        "PubChem Substance",
+        "SwissLipids",
+        "TTD Drug",
+        "Wikidata",
+        "Wikipedia",
+    ] = "HGNC",
 ) -> Tuple[pd.DataFrame, dict]:
-    """Map input list using BridgeDb.
+    """
+    Map input identifiers using BridgeDb.
 
-    :param identifiers: a dataframe with one column called identifier (the output of data_loader.py)
-    :param input_species: specify the species, for now only human would be supported
-    :param input_datasource: type of input identifier. More details at https://www.bridgedb.org/pages/system-codes.html
-    :param output_datasource: specify which type of identifiers you want to map your input identifiers.
-    :returns: a DataFrame containing the mapped identifiers and dictionary of the data resource metadata.
-    :raises ValueError: if the input_datasource is not provided or if the request fails
+    :param identifiers: A pandas DataFrame with one column named 'identifier'.
+    :param input_species: Optional species name. Only 'Homo sapiens' is currently supported.
+    :param input_datasource: The type of identifier in the input DataFrame. Expected formats by datasource:
+        - "HGNC": e.g. "TP53"
+        - "HGNC Accession Number": e.g. "HGNC:11998"
+        - "Ensembl": e.g. "ENSG00000141510"
+        - "NCBI Gene": e.g. "7157"
+        - "MGI": e.g. "MGI:104874"
+        - "miRBase mature sequence": e.g. "hsa-miR-21-5p"
+        - "miRBase Sequence": e.g. "MI0000077"
+        - "OMIM": e.g. "191170"
+        - "RefSeq": e.g. "NM_000546"
+        - "Rfam": e.g. "RF00001"
+        - "RGD": e.g. "RGD:620474"
+        - "SGD": e.g. "YAL001C"
+        - "UCSC Genome Browser": e.g. "uc001aaa.3"
+        - "NCBI Protein": e.g. "NP_000537"
+        - "PDB": e.g. "1TUP"
+        - "Pfam": e.g. "PF00069"
+        - "Uniprot-SwissProt": e.g. "P04637"
+        - "Uniprot-TrEMBL": e.g. "Q9H0H5"
+        - "Affy": e.g. "202763_at"
+        - "Agilent": e.g. "A_23_P61180"
+        - "Illumina": e.g. "ILMN_1803030"
+        - "Gene Ontology": e.g. "GO:0006915"
+        - "CAS": e.g. "50-00-0"
+        - "ChEBI": e.g. "CHEBI:15377"
+        - "ChemSpider": e.g. "5798"
+        - "ChEMBL compound": e.g. "CHEMBL25"
+        - "DrugBank": e.g. "DB01050"
+        - "HMDB": e.g. "HMDB0000122"
+        - "Guide to Pharmacology Ligand ID": e.g. "1234"
+        - "InChIKey": e.g. "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
+        - "KEGG Compound": e.g. "C00031"
+        - "KEGG Drug": e.g. "D00001"
+        - "KEGG Glycan": e.g. "G00001"
+        - "LIPID MAPS": e.g. "LMFA01010001"
+        - "LipidBank": e.g. "LBID0001"
+        - "PharmGKB Drug": e.g. "PA449053"
+        - "PubChem Compound": e.g. "2244"
+        - "PubChem Substance": e.g. "12345678"
+        - "SwissLipids": e.g. "SLM:000000001"
+        - "TTD Drug": e.g. "D000001"
+        - "Wikidata": e.g. "Q18216"
+        - "Wikipedia": e.g. "Aspirin"
+    :param output_datasource: Optional list of identifier types to map to.
+    :returns: Tuple of:
+        - DataFrame with mapped identifiers.
+        - Dictionary of data resource metadata.
+    :raises ValueError: If required inputs are missing or the mapping fails.
     """
     if input_species is None:
         input_species = "Human"
-
-    if not input_datasource:
-        raise ValueError("Please provide the identifier datasource, e.g. HGNC")
-
+    data_sources = read_datasource_file()
+    input_source = data_sources.loc[
+        data_sources[Cons.SOURCE_COL] == input_datasource, "systemCode"
+    ].iloc[0]
+    input_type = data_sources.loc[data_sources[Cons.SOURCE_COL] == input_datasource, "type"].iloc[0]
     if output_datasource is None or "All":
-        output_datasource = [
-            "Uniprot-TrEMBL",
-            "NCBI Gene",
-            "Ensembl",
-            "HGNC Accession Number",
-            "HGNC",
-        ]
-
-    data_sources = read_resource_files()
-    input_source = data_sources.loc[data_sources["source"] == input_datasource, "systemCode"].iloc[
-        0
-    ]
+        output_datasource = data_sources[data_sources["type"] == input_type]["source"].tolist()
+    else:
+        assert isinstance(output_datasource, list), "output_datasource must be a list"
 
     if len(identifiers) < 1:
         raise ValueError("Please provide at least one identifier datasource, e.g. HGNC")
@@ -128,7 +257,7 @@ def bridgedb_xref(
     )
 
     # Setting up the query url
-    query_link = f"{BRIDGEDB_ENDPOINT}/{input_species}/xrefsBatch"
+    query_link = f"{Cons.BRIDGEDB_ENDPOINT}/{input_species}/xrefsBatch"
 
     # Record the start time
     start_time = datetime.datetime.now()
@@ -162,31 +291,32 @@ def bridgedb_xref(
             target_source = target_parts[0]
             target_id = ":".join(target_parts[1:])
 
-            parsed_results.append([identifier, identifier_source, target_id, target_source])
-
-    # Create a DataFrame
+            parsed_results.append(
+                [identifier, identifier_source, target_id, target_source]
+            )  # Create a DataFrame
     bridgedb = pd.DataFrame(
         parsed_results,
-        columns=["identifier", "identifier.source", "target", "target.source"],
+        columns=[
+            Cons.IDENTIFIER_COL,
+            Cons.IDENTIFIER_SOURCE_COL,
+            Cons.TARGET_COL,
+            Cons.TARGET_SOURCE_COL,
+        ],
     )
 
     # Replace 'target.source' values with complete source names from 'data_sources'
-    bridgedb["target.source"] = bridgedb["target.source"].map(
-        data_sources.set_index("systemCode")["source"]
+    bridgedb[Cons.TARGET_SOURCE_COL] = bridgedb[Cons.TARGET_SOURCE_COL].map(
+        data_sources.set_index("systemCode")[Cons.SOURCE_COL]
     )
-
     # Drop not mapped ids
-    bridgedb = bridgedb.dropna(subset=["target.source"])
-
+    bridgedb = bridgedb.dropna(subset=[Cons.TARGET_SOURCE_COL])
     # Subset based on the output_datasource
-    bridgedb = bridgedb[bridgedb["target.source"].isin(output_datasource)]
-
-    bridgedb = bridgedb.drop_duplicates()
+    bridgedb_subset = bridgedb[bridgedb[Cons.TARGET_SOURCE_COL].isin(output_datasource)]
+    bridgedb_subset = bridgedb_subset.drop_duplicates()
     identifiers.columns = [
         "{}{}".format(c, "" if c in "identifier" else "_dea") for c in identifiers.columns
     ]
-    bridgedb = bridgedb.merge(identifiers, on="identifier")
-
+    bridgedb_subset = bridgedb_subset.merge(identifiers, on=Cons.IDENTIFIER_COL)
     """Metadata details"""
     # Get the current date and time
     current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -198,7 +328,7 @@ def bridgedb_xref(
 
     # Add the datasource, query, query time, and the date to metadata
     bridgedb_metadata = {
-        "datasource": "BridgeDb",
+        "datasource": Cons.BRIDGEDB,
         "metadata": {
             "source_version": bridgedb_version,
             "data_version": datasource_version,
@@ -213,7 +343,7 @@ def bridgedb_xref(
         },
     }
 
-    return bridgedb, bridgedb_metadata
+    return bridgedb_subset, bridgedb_metadata
 
 
 """PubChem helper functions."""
@@ -233,13 +363,13 @@ def check_smiles(smile: Optional[str]) -> Optional[str]:
 
 
 def get_cid_from_data(idx: Optional[str], idx_type: str) -> Optional[str]:
-    """Get PubChem ID from any query.
+    """Get PubChem ID from any query using PubChempy.
 
     :param idx: identifier to query
     :param idx_type: type of identifier to query. Potential curies include : smiles, inchikey, inchi, name
     :returns: PubChem ID
     """
-    if idx_type.lower() == "smiles":
+    if idx_type.lower() == Cons.SMILES.lower():
         idx = check_smiles(idx)
 
     if not idx:
@@ -256,11 +386,41 @@ def get_cid_from_data(idx: Optional[str], idx_type: str) -> Optional[str]:
         return None
 
 
-def pubchem_xref(identifiers: list, identifier_type: str = "name") -> Tuple[pd.DataFrame, dict]:
+def get_cid_from_pugrest(idx: Optional[str], idx_type: str) -> Optional[str]:
+    """Get PubChem ID from any query throung Pubchem PUGREST.
+
+    :param idx: identifier to query
+    :param idx_type: type of identifier to query. Potential curies include : smiles, inchikey, inchi, name
+    :returns: PubChem ID
+    """
+    if idx_type.lower() == Cons.SMILES.lower():
+        idx = check_smiles(idx)
+
+    if not idx:
+        return None
+
+    cid_data = requests.get(
+        f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{idx_type}/{idx}/property/Title/JSON"
+    ).json()
+
+    if "Fault" in cid_data:
+        logger.info(f"Issue with {idx}")
+        return None
+
+    cidx = cid_data["PropertyTable"]["Properties"][0]["CID"]
+    if "." in str(cidx):
+        return str(cidx).split(".")[0]
+    return str(cidx)
+
+
+def pubchem_xref(
+    identifiers: list, identifier_type: str = "name", cache_res: bool = False
+) -> Tuple[pd.DataFrame, dict]:
     """Map chemical names or smiles or inchikeys to PubChem identifier.
 
     :param identifiers: a list of identifiers to query
     :param identifier_type: type of identifier to query. Potential curies include : smiles, inchikey, inchi, name
+    :param cache_res: whether to cache the results
     :raises ValueError: if the input_datasource is not provided or if the request fails
     :returns: a DataFrame containing the mapped identifiers and dictionary of the data resource metadata.
     """
@@ -272,16 +432,45 @@ def pubchem_xref(identifiers: list, identifier_type: str = "name") -> Tuple[pd.D
 
     # Getting the response to the query
     cid_data = []
-    for idx in identifiers:
-        cid = get_cid_from_data(idx, identifier_type)
+    c = 0
+
+    if cache_res:
+        if os.path.exists("pubchem_cache_results.json"):
+            with open("pubchem_cache_results.json", "r") as f:
+                cache_results = json.load(f)
+        else:
+            cache_results = {}
+    else:
+        cache_results = {}
+
+    c = 0
+    for idx in tqdm(identifiers, desc="Mapping PubChem"):
+        if idx in cache_results:
+            cid = cache_results[idx]
+        else:
+            c += 1
+            if c == 100:
+                if cache_res:
+                    with open("pubchem_cache_results.json", "w") as f:
+                        json.dump(cache_results, f)
+                time.sleep(5)
+                c = 0
+
+            cid = get_cid_from_pugrest(idx, identifier_type)
+            cache_results[idx] = cid
+
         cid_data.append(
             {
-                "identifier": idx,
-                "identifier.source": identifier_type,
-                "target": str(cid).split(".")[0] if cid else None,
-                "target.source": "PubChem Compound",
+                Cons.IDENTIFIER_COL: idx,
+                Cons.IDENTIFIER_SOURCE_COL: identifier_type,
+                Cons.TARGET_COL: f"{Cons.PUBCHEM_COMPOUND_CID}:{cid}" if cid is not None else None,
+                Cons.TARGET_SOURCE_COL: Cons.PUBCHEM_COMPOUND,
             }
         )
+
+    if cache_res:
+        with open("pubchem_cache_results.json", "w") as f:
+            json.dump(cache_results, f)
 
     # Record the end time
     end_time = datetime.datetime.now()
@@ -299,7 +488,7 @@ def pubchem_xref(identifiers: list, identifier_type: str = "name") -> Tuple[pd.D
 
     # Add the datasource, query, query time, and the date to metadata
     pubchem_metadata = {
-        "datasource": "Pubchem python client",
+        "datasource": Cons.PUBCHEM,
         "metadata": {
             "package": "PubChemPy",
             "data_version": stable_package_version,
@@ -343,7 +532,7 @@ def cid2chembl(cids: list) -> dict:
         other_idenfitiers = other_idenfitiers[0]
 
         for idx in other_idenfitiers["Synonym"]:
-            if idx.startswith("CHEMBL"):
+            if idx.startswith(Cons.CHEMBL):
                 chembl_data[idx] = pubchem_idx
                 break
 

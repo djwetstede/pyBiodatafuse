@@ -33,8 +33,6 @@ OpenTargets
 
 `OpenTargets database <https://www.opentargets.org/>` uses human genetics and genomics data for systematic drug target identification and prioritisation.
 
-.. autofunction:: pyBiodatafuse.annotators.opentargets.get_gene_location
-
 .. autofunction:: pyBiodatafuse.annotators.opentargets.get_gene_go_process
 
 .. autofunction:: pyBiodatafuse.annotators.opentargets.get_gene_reactome_pathways
@@ -57,8 +55,6 @@ Wikidata
 
 `Wikidata <https://www.wikidata.org/>` acts as central storage for the structured data of its Wikimedia sister projects including Wikipedia, Wikivoyage, Wiktionary, Wikisource, and others.
 
-.. autofunction:: pyBiodatafuse.annotators.wikidata.get_gene_literature
-
 .. autofunction:: pyBiodatafuse.annotators.wikidata.get_gene_cellular_component
 
 WikiPathways
@@ -74,4 +70,4 @@ MINERVA
 `MINERVA <https://minerva.pages.uni.lu/doc/>` is a standalone webserver for visual exploration, analysis and management of molecular networks encoded in following systems biology formats.
 
 .. autofunction:: pyBiodatafuse.annotators.minerva.get_minerva_components
-.. autofunction:: pyBiodatafuse.annotators.minerva.get_gene_minerva_pathways
+.. autofunction:: pyBiodatafuse.annotators.minerva.get_gene_pathways
