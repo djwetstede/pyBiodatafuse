@@ -209,11 +209,12 @@ def get_compound_annotations(
             print(f"Processing IntAct column for compounds: {intact_col}")
             chebi_ids = set()
 
+            # Collect all ChEBI IDs
             for idx, interactions in combined_df[intact_col].dropna().items():
                 if isinstance(interactions, list):
                     for interaction in interactions:
                         if isinstance(interaction, dict):
-                            for key in ["id_A", "id_B"]:
+                            for key in [Cons.INTACT_ID_A, Cons.INTACT_ID_B]:
                                 val = interaction.get(key)
                                 if isinstance(val, str) and val.startswith("CHEBI:"):
                                     chebi_ids.add(val)
@@ -221,19 +222,26 @@ def get_compound_annotations(
             chebi_ids = list(chebi_ids)
 
             if chebi_ids:
-                # Convert CHEBI IDs to PubChem IDs
+                # Convert ChEBI → PubChem
                 pubchem_ids, id_to_pubchem = query_bridgedb_for_pubchem(chebi_ids, "ChEBI")
                 if pubchem_ids:
                     intact_map_cid = query_compoundwiki(pubchem_ids)
 
                     intact_map_original = {}
-                    for original_id, pubchem_id in id_to_pubchem.items():
+                    for chebi_id, pubchem_id in id_to_pubchem.items():
                         if pubchem_id in intact_map_cid:
-                            intact_map_original[original_id] = intact_map_cid[pubchem_id]
+                            annotated = []
+                            for ann in intact_map_cid[pubchem_id]:
+                                ann_copy = ann.copy()
+                                ann_copy["input_identifier"] = chebi_id
+                                annotated.append(ann_copy)
+
+                            intact_map_original[chebi_id] = annotated
 
                     annotation_map.update(intact_map_original)
 
-                    for key in ["id_A", "id_B"]:
+                    # Inject annotations
+                    for key in [Cons.INTACT_ID_A, Cons.INTACT_ID_B]:
                         combined_df = inject_compoundwiki_annotations(
                             combined_df,
                             intact_col,
@@ -311,7 +319,7 @@ def get_compound_annotations(
                 },
             )
 
-    # --- MolMeDB block ---
+    # --- MolMeDB block --- TODO: Needs testing
     for molmedb_col in [Cons.MOLMEDB_PROTEIN_COMPOUND_COL, Cons.MOLMEDB_COMPOUND_PROTEIN_COL]:
         if molmedb_col in combined_df.columns:
             print("Processing MolMeDB column for compounds...")
@@ -322,8 +330,8 @@ def get_compound_annotations(
             for entry in combined_df[molmedb_col].dropna():
                 if isinstance(entry, list):
                     for compound in entry:
-                        if isinstance(compound, dict) and "MolMeDB_inchikey" in compound:
-                            inchikey = compound["MolMeDB_inchikey"]
+                        if isinstance(compound, dict) and Cons.MOLMEDB_INCHIKEY in compound:
+                            inchikey = compound[Cons.MOLMEDB_INCHIKEY]
                             if isinstance(inchikey, str) and inchikey:
                                 inchikeys.append(inchikey)
 
@@ -343,7 +351,7 @@ def get_compound_annotations(
                     combined_df = inject_compoundwiki_annotations(
                         combined_df,
                         molmedb_col,
-                        "MolMeDB_inchikey",
+                        Cons.MOLMEDB_INCHIKEY,
                         {
                             inchikey: molmedb_map[pcid]
                             for inchikey, pcid in inchikey_to_pubchem.items()
@@ -351,18 +359,18 @@ def get_compound_annotations(
                         },
                     )
 
-    # --- OpenTargets block ---
-    if Cons.OPENTARGETS_COL in combined_df.columns:
+    # --- OpenTargets block --- TODO: Needs testing
+    if Cons.OPENTARGETS_GENE_COMPOUND_COL in combined_df.columns:
         print("Processing OpenTargets column for compounds...")
 
         chembl_ids = []
 
         # Collect all CHEMBL IDs
-        for entry in combined_df[Cons.OPENTARGETS_COL].dropna():
+        for entry in combined_df[Cons.OPENTARGETS_GENE_COMPOUND_COL].dropna():
             if isinstance(entry, list):
                 for compound in entry:
-                    if isinstance(compound, dict) and "chembl_id" in compound:
-                        chembl_id = compound["chembl_id"]
+                    if isinstance(compound, dict) and Cons.CHEMBL_ID in compound:
+                        chembl_id = compound[Cons.CHEMBL_ID]
                         if isinstance(chembl_id, str) and chembl_id.startswith("CHEMBL:"):
                             chembl_ids.append(chembl_id.replace("CHEMBL:", ""))
 
@@ -388,8 +396,8 @@ def get_compound_annotations(
                 # Inject annotations into the nested dictionaries
                 combined_df = inject_compoundwiki_annotations(
                     combined_df,
-                    Cons.OPENTARGETS_COL,
-                    "chembl_id",
+                    Cons.OPENTARGETS_GENE_COMPOUND_COL,
+                    Cons.CHEMBL_ID,
                     injection_map,
                 )
 
