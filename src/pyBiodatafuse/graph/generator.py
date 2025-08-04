@@ -249,6 +249,18 @@ def add_intact_interactions_subgraph(g, gene_node_label, annot_list):
                 ),
                 Cons.LABEL: Cons.COMPOUND_NODE_LABEL,
             }
+
+            # CompoundWiki
+            cw_list = interaction.get("CompoundWiki_compounds")
+            if cw_list and isinstance(cw_list, list):
+                for cw_dict in cw_list:
+                    if cw_dict.get("input_identifier") == partner:
+                        for key, value in cw_dict.items():
+                            mapped_key = Cons.COMPOUNDWIKI_OUTPUT_DICT.get(key)
+                            if mapped_key and value is not None and str(value).strip():
+                                compound_attrs[mapped_key] = value
+                        break
+            
             merge_node(g, partner, compound_attrs)
 
         edge_key = tuple(sorted([gene_node_label, partner]))
