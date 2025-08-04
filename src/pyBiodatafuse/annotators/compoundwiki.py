@@ -34,7 +34,7 @@ def check_endpoint_compoundwiki() -> bool:
     except SPARQLWrapperException:
         return False
 
-
+#TODO Wait until Compoundwiki includes versioning.
 def get_version_compoundwiki() -> dict:
     """Return metadata with a timestamp for versioning."""
     now = str(datetime.datetime.now())
@@ -79,8 +79,6 @@ def query_compoundwiki(compound_ids) -> dict:
 
     for batch in query_batches:
         sparql_query = sparql_query_template.substitute(compound_list=batch)
-        print("Running SPARQL query:")
-        print(sparql_query)
         sparql.setQuery(sparql_query)
         res = sparql.queryAndConvert()
         bindings = res["results"]["bindings"]
@@ -235,14 +233,16 @@ def get_compound_annotations(
 
                     annotation_map.update(intact_map_original)
 
-                    combined_df = inject_compoundwiki_annotations(
-                        combined_df,
-                        intact_col,
-                        "id",
-                        intact_map_original,
-                    )
+                    for key in ["id_A", "id_B"]:
+                        combined_df = inject_compoundwiki_annotations(
+                            combined_df,
+                            intact_col,
+                            key,
+                            intact_map_original,
+                        )
 
-    # --- KEGG block ---
+
+    # --- KEGG block --- TODO: Needs testing
     if kegg_compound_df is not None and Cons.KEGG_PATHWAY_COL in combined_df.columns:
         print("Processing KEGG column for compounds...")
         kegg_ids = []
@@ -266,7 +266,7 @@ def get_compound_annotations(
                 kegg_map,
             )
 
-    # --- PubChem block ---
+    # --- PubChem block --- TODO: Needs testing
     if Cons.PUBCHEM_COMPOUND_ASSAYS_COL in combined_df.columns:
         print("Processing PubChem column for compounds...")
 
@@ -289,7 +289,7 @@ def get_compound_annotations(
         pubchem_ids = list(set(pubchem_ids))
 
         if pubchem_ids:
-            # Query CompoundWiki directly using PubChem IDs
+            # Query CompoundWiki
             pubchem_map = query_compoundwiki(pubchem_ids)
             annotation_map.update(pubchem_map)
 
@@ -310,6 +310,89 @@ def get_compound_annotations(
                     )
                 },
             )
+
+    # --- MolMeDB block ---
+    for molmedb_col in [Cons.MOLMEDB_PROTEIN_COMPOUND_COL, Cons.MOLMEDB_COMPOUND_PROTEIN_COL]:
+        if molmedb_col in combined_df.columns:
+            print("Processing MolMeDB column for compounds...")
+
+            inchikeys = []
+
+            # Collect all InChIKeys
+            for entry in combined_df[molmedb_col].dropna():
+                if isinstance(entry, list):
+                    for compound in entry:
+                        if isinstance(compound, dict) and "MolMeDB_inchikey" in compound:
+                            inchikey = compound["MolMeDB_inchikey"]
+                            if isinstance(inchikey, str) and inchikey:
+                                inchikeys.append(inchikey)
+
+            # Deduplicate
+            inchikeys = list(set(inchikeys))
+
+            if inchikeys:
+                # Convert InChIKeys to PubChem IDs
+                pubchem_ids, inchikey_to_pubchem = query_bridgedb_for_pubchem(inchikeys, "InChIKey")
+
+                if pubchem_ids:
+                    # Query CompoundWiki with the PubChem IDs
+                    molmedb_map = query_compoundwiki(pubchem_ids)
+                    annotation_map.update(molmedb_map)
+
+                    # Inject annotations into DataFrame
+                    combined_df = inject_compoundwiki_annotations(
+                        combined_df,
+                        molmedb_col,
+                        "MolMeDB_inchikey",
+                        {
+                            inchikey: molmedb_map[pcid]
+                            for inchikey, pcid in inchikey_to_pubchem.items()
+                            if pcid in molmedb_map
+                        },
+                    )
+
+    # --- OpenTargets block ---
+    if Cons.OPENTARGETS_COL in combined_df.columns:
+        print("Processing OpenTargets column for compounds...")
+
+        chembl_ids = []
+
+        # Collect all CHEMBL IDs
+        for entry in combined_df[Cons.OPENTARGETS_COL].dropna():
+            if isinstance(entry, list):
+                for compound in entry:
+                    if isinstance(compound, dict) and "chembl_id" in compound:
+                        chembl_id = compound["chembl_id"]
+                        if isinstance(chembl_id, str) and chembl_id.startswith("CHEMBL:"):
+                            chembl_ids.append(chembl_id.replace("CHEMBL:", ""))
+
+        # Deduplicate
+        chembl_ids = list(set(chembl_ids))
+
+        if chembl_ids:
+            # Convert CHEMBL to PubChem IDs
+            pubchem_ids, chembl_to_pubchem = query_bridgedb_for_pubchem(chembl_ids, "ChEMBL Compound")
+
+            if pubchem_ids:
+                # Query CompoundWiki with the PubChem IDs
+                opentargets_map = query_compoundwiki(pubchem_ids)
+                annotation_map.update(opentargets_map)
+
+                # Prepare mapping for injection using the original CHEMBL IDs
+                injection_map = {
+                    f"CHEMBL:{chembl_id}": opentargets_map[pcid]
+                    for chembl_id, pcid in chembl_to_pubchem.items()
+                    if pcid in opentargets_map
+                }
+
+                # Inject annotations into the nested dictionaries
+                combined_df = inject_compoundwiki_annotations(
+                    combined_df,
+                    Cons.OPENTARGETS_COL,
+                    "chembl_id",
+                    injection_map,
+                )
+
 
     end_time = datetime.datetime.now()
 
