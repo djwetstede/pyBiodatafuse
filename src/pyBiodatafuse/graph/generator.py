@@ -1925,7 +1925,7 @@ def add_aopwiki_compound_subgraph(g, compound_node_label, annot_list):
             })
             g.add_node(aop_node_label, attr_dict=aop_node_attrs)
 
-            # # Connect compound to AOP node
+            # Connect compound to AOP node
             edge_attrs = Cons.AOPWIKI_EDGE_ATTRS.copy()
             edge_attrs[Cons.EDGE_HASH] = hash(frozenset(edge_attrs.items()))
             if not edge_exists(g, compound_node_label, aop_node_label, edge_attrs):
