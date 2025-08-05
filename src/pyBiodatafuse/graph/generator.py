@@ -1499,8 +1499,7 @@ def add_molmedb_compound_gene_subgraph(g, compound_node_label, annot_list):
         annot_node_attrs = Cons.MOLMEDB_GENE_NODE_ATTRS.copy()
         annot_node_attrs.update(
             {
-                Cons.HGNC_SYMBOL: annot.get(Cons.MOLMEDB_HGNC_SYMBOL),
-                Cons.UNIPROT_TREMBL_ID: annot.get(Cons.MOLMEDB_UNIPROT_ID),
+                Cons.NAME: annot[Cons.MOLMEDB_HGNC_SYMBOL],
             }
         )
 
@@ -1526,7 +1525,7 @@ def add_molmedb_compound_gene_subgraph(g, compound_node_label, annot_list):
             g.add_edge(
                 compound_node_label,
                 annot_node_label,
-                label=Cons.MOLMEDB_PROTEIN_COMPOUND_EDGE_LABEL,
+                label=Cons.MOLMEDB_COMPOUND_PROTEIN_EDGE_LABEL,
                 attr_dict=edge_attrs,
             )
 
@@ -2328,6 +2327,7 @@ def _built_compound_based_graph(
         Cons.MOLMEDB_COMPOUND_PROTEIN_COL: add_molmedb_compound_gene_subgraph,
         Cons.INTACT_COMPOUND_INTERACT_COL: add_intact_compound_interactions_subgraph,
         Cons.KEGG_PATHWAY_COL: add_kegg_compound_pathway_subgraph,
+        Cons.MOLMEDB_COMPOUND_PROTEIN_COL: add_molmedb_compound_gene_subgraph,
     }  # type: ignore
 
     for _i, row in tqdm(combined_df.iterrows(), total=combined_df.shape[0], desc="Building graph"):
