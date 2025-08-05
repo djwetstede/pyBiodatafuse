@@ -1902,6 +1902,7 @@ def add_aopwiki_subgraph(g, entity_node_label, annot_list):
 
     return g
 
+
 def add_aopwiki_compound_subgraph(g, compound_node_label, annot_list):
     """Construct part of the graph by linking a compound to AOPWiki nodes.
 
